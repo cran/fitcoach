@@ -1,0 +1,220 @@
+---
+title: "Fitcoach package workflow example"
+author: "Niraj Juneja, Charles de Lassence"
+output: rmarkdown::pdf_document
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(fitcoach)
+library(ggplot2)
+```
+
+## Example 1: Data Loader - Getting data from Fitbit API
+
+This part explains how to connect to the Fitbit API and get your data, using `DataLoader`. 
+
+
+**Step 1:** You first need to make sure that you have [registered an app](https://dev.fitbit.com/) and set it as *Personal* in order to retrieve intraday data. You will need the following credentials in order to connect the API: App name (or *OAuth 2.0 Client ID*), Client Key and Client Secret. 
+
+
+**Step 2:** We initialize a new `DataLoader` object, and connect to the API with OAuth2, using the credentials described above. Note that instead of providing the credentials directly as parameters, you could point to a cache file (usually named `.httr-oauth`) using the `cache.file` parameter.
+
+```{r eval = FALSE}
+mydata <- DataLoader$new()
+mydata$connect(appname = "cdlr",
+               key = "227FWR",
+               secret = "3089e3d1ac5dde1aa00b54a0c8661f42"
+)
+```
+
+
+**Step 3:** We request the data and write it to JSON files using the `request` method. You need to specify the type of timeseries ('day' or 'intraday'), the list of activities ([full list here](https://dev.fitbit.com/docs/activity/)), the start and end dates, and the folder in which the JSON files will be written.
+
+```{r eval = FALSE}
+masterPath <- system.file("extdata", 
+                          "daily-time-series", 
+                          package = "fitcoach")
+
+mydata$request(
+    type = 'day', 
+    activities = list("calories", "steps", "distance", "minutesVeryActive"), 
+    start.date = "2016-01-01", 
+    end.date = "2016-02-01", 
+    path = masterPath
+)
+```
+
+Once the JSON files have been created, they can be used for further analysis.
+
+
+## Example 2: Fit Analyzer - Daily File Analysis
+
+Examples below demonstrate usage scenarios for `FitAnalyzer`.
+
+
+**Step 1:** We first need to point to a folder that contains the JSON files for "daily" file analysis. These files are created by `DataLoader.R`.
+
+We then create a new instance of `FitAnalyzer`, passing in the folder and the goal that we want to optimize on. Goals can be the following: a) calories b) steps c) distance d) floors.
+
+The example below uses `steps` as the goal.
+
+```{r}
+masterPath <- system.file("extdata", 
+                          "daily-time-series", 
+                          package = "fitcoach")
+
+ana <- FitAnalyzer$new("steps")
+```
+
+
+**Step 2:** Next we get the data.frame ready for analysis. Note this data.frame is cleaned and augmented with additional data elements not present in the JSON file. E.g.: we augment `weekday`, `weekend` and mark rows that are valid.
+
+```{r}
+timeseries.frame <- 
+    ana$getAnalysisFrame(folder = masterPath, 
+                         analysis.type = "daily")
+head(timeseries.frame)
+```
+
+
+**Step 3:** next we find the most important variables that are enabling meeting the goals for the person. Note this call creates a `glm` model behind the scenes and ranks the variables based on the coefficients of the glm model. You can also get the `glm` fit object to do further analysis.
+
+```{r}
+vars <- ana$findImportantVariables(tsDataFrame = timeseries.frame, 
+                                   seed = 12345)
+vars
+```
+
+
+Getting the `fit` object.
+
+```{r}
+fit <- ana$getFit()
+summary(fit)
+```
+
+
+```{r}
+par(mfrow=c(2,2))
+plot(fit)
+```
+
+
+**Step 4:** Next, we can then plot the performance of the individual, relative to the most important variables that are making a difference. 
+
+```{r fig.width= 7}
+ana$showMostImportantCharts(tsDataFrame = timeseries.frame)
+```
+
+
+**Step 5:** We can also get the prediction on goal performance using the call below.
+
+```{r}
+rows.test <- timeseries.frame[sample(1:191, 1), ]
+x <- createDependentVariableFrame(master = rows.test, goal = "steps")
+res <- ana$predictGoal(x)
+cat(paste("Prediction for the day", ": expected steps = ", round(res)))
+```
+
+
+*** 
+
+## Example 3: FitAnalyzer - Intraday File Analysis
+
+Examples below demonstrate usage scenarios for `FitAnalyzer` for **Intraday analysis**.
+
+
+**Step 1**: We first need to point to a folder that contains the JSON files for *intraday* file analysis. These files are created by `DataLoader.R`.
+
+We then create a new instance of `FitAnalyzer` passing in the folder and the goal that we want to optimize on. Goals can be the following: a) calories b) steps c) distance d) floors .
+
+The example below uses *calories* as the goal
+
+```{r }
+masterPath <-
+    system.file("extdata", "intra-daily-timeseries", package = "fitcoach")
+ana <- FitAnalyzer$new("calories")
+```
+
+
+**Step 2:** Next we get the data.frame ready for analysis. Note that this data.frame is cleaned and augmented with additional data elements not present in the JSON file. E.g.: we augment cumulative sum during the day, weekday, weekend, etc.
+
+```{r}
+intra <- ana$getAnalysisFrame(folder = masterPath, analysis.type = "intra.day")
+head(intra)
+```
+
+
+**Step 3:** Next we find the most important variables that are enabling meeting the goals for the person. Note: this call creates a **gbm** model behind the scenes and ranks the variables based on *relative.influence* call to `gbm` model. You can also get the `gbm` fit object to do further analysis.
+
+```{r}
+vars <- ana$findImportantVariables(intra)
+vars <- sort(vars, decreasing = TRUE)
+vars
+```
+
+
+Plot of important variables below.
+
+```{r}
+vars.frame <- data.frame(variables = names(vars), values = vars)
+vars.frame$lnvalue <- log(vars.frame$values)
+vars.frame <- vars.frame[1:7, ]
+barplot(vars.frame$value, xlab = "variables", ylab = "relative importance", 
+        names.arg = vars.frame$variables,
+        cex.names = 0.65, cex.lab = 0.65, ylim = c(0.0, 0.1))
+```
+
+
+Summary of GBM model fit below.
+
+```{r}
+fit <- ana$getFit()
+summary(fit)
+```
+
+
+**Step 4:** Next we can then plot the performance of the individual relative to the most important variables that are making a difference. 
+For the 4 most important variables, the average value for every 15 min of a day is plotted, along with the moving average (using `geom_smooth` from `ggplot2`).
+
+```{r fig.width= 7}
+ana$showMostImportantCharts(tsDataFrame = intra)
+```
+
+
+**Step 5:** We can also get the prediction on goal performance using the call below.
+
+```{r}
+rows.test <- intra[sample(1:191, 1), ] # Take any random input for test
+res <- ana$predictGoal(rows.test)
+cat(paste("Prediction for the day", ": expected calories =", round(res)))
+```
+
+
+## Example 4: FitUtil - Illustration for usage of FitUtil functions
+
+Approach to get a clean data.frame from JSON files.
+
+```{r}
+# masterPath is the folder containing JSON files
+masterPath <- system.file("extdata", "daily-time-series", package = "fitcoach")
+
+# Create the data.frame. This is not cleaned
+master <- createTsMasterFrame(masterPath)
+
+# Identify and Mark rows that are valid. i.e distance for the day >0
+master <- markValidRows(master)
+
+# Filter Valid rows only
+master <- master[master$valid == TRUE, ]
+
+# Augment data with additional information. Eg: weekday information
+master <- augmentData(master)
+head(master)
+```
+
